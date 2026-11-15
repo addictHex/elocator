@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>816 Locator — OSM Compass Navigator</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root{
+    --bg:#0f172a; --panel:rgba(15,23,42,.88); --line:#334155;
+    --text:#e2e8f0; --dim:#94a3b8; --accent:#f43f5e; --ok:#34d399; --warn:#fbbf24;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{height:100%; margin:0; font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg); color:var(--text); overscroll-behavior:none}
+  body{display:flex; flex-direction:column; height:100dvh}
+
+  header{background:var(--panel); border-bottom:1px solid var(--line); padding:8px 10px; z-index:1200}
+  header h1{font-size:15px; margin:0 0 6px; letter-spacing:.4px}
+  header h1 span{color:var(--accent)}
+  .searchrow{display:flex; gap:6px; position:relative}
+  #q{flex:1; background:#1e293b; color:var(--text); border:1px solid var(--line);
+     border-radius:8px; padding:9px 10px; font-size:15px; outline:none}
+  #q:focus{border-color:var(--accent)}
+  button{background:#1e293b; color:var(--text); border:1px solid var(--line); border-radius:8px;
+         padding:8px 12px; font-size:14px; cursor:pointer}
+  button:active{background:#334155}
+  #go{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600}
+  #results{position:absolute; top:100%; left:0; right:0; margin-top:4px; list-style:none;
+           padding:0; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+           max-height:260px; overflow:auto; z-index:1300}
+  #results li{padding:9px 10px; font-size:13.5px; cursor:pointer; border-bottom:1px solid var(--line)}
+  #results li:last-child{border-bottom:none}
+  #results li:hover,#results li.sel{background:#1e293b}
+  .hidden{display:none !important}
+
+  #mapwrap{flex:1; position:relative}
+  #map{position:absolute; inset:0; background:#0b1220}
+
+  /* status pills */
+  #status{position:absolute; top:8px; right:8px; z-index:1100; display:flex; flex-direction:column;
+          gap:4px; align-items:flex-end}
+  .pill{background:var(--panel); border:1px solid var(--line); border-radius:999px;
+        padding:4px 10px; font-size:12px}
+  .pill.ok{border-color:var(--ok); color:var(--ok)}
+  .pill.warn{border-color:var(--warn); color:var(--warn)}
+
+  /* controls */
+  #controls{position:absolute; left:8px; top:8px; z-index:1100; display:flex; flex-direction:column; gap:5px}
+  #controls button{font-size:13px; background:var(--panel); backdrop-filter:blur(4px)}
+  #controls label{background:var(--panel); border:1px solid var(--line); border-radius:8px;
+                  padding:6px 8px; font-size:12.5px; display:flex; gap:6px; align-items:center}
+
+  /* compass card */
+  #compassCard{position:absolute; bottom:10px; left:50%; transform:translateX(-50%); z-index:1100;
+               background:var(--panel); border:1px solid var(--line); border-radius:16px;
+               padding:8px 14px 10px; display:flex; flex-direction:column; align-items:center;
+               width:min(78vw,320px); backdrop-filter:blur(6px)}
+  #dial{width:190px; height:190px}
+  .readouts{text-align:center; margin-top:-6px}
+  #relBearing{font-size:24px; font-weight:700; letter-spacing:.5px}
+  #relBearing small{font-size:13px; color:var(--dim); font-weight:400}
+  #absBearing,#distance{font-size:12.5px; color:var(--dim); margin-top:1px}
+  #targetLabel{font-size:12px; color:var(--text); max-width:260px; overflow:hidden;
+               text-overflow:ellipsis; white-space:nowrap; margin-top:3px}
+
+  /* manual heading / declination panel */
+  #manual{position:absolute; bottom:calc(50% + 132px); left:50%; transform:translateX(-50%);
+          z-index:1100; background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          padding:8px 12px; width:min(82vw,300px); font-size:12.5px; color:var(--dim)}
+  #manual input[type=range]{width:100%; margin-top:6px}
+  #manual .declin{display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:4px}
+  #manual input[type=number]{width:64px; background:#1e293b; color:var(--text);
+          border:1px solid var(--line); border-radius:6px; padding:4px 6px}
+
+  /* map markers */
+  .userdot{width:18px;height:18px;border-radius:50%;background:#3b82f6;border:3px solid #fff;
+           box-shadow:0 0 0 4px rgba(59,130,246,.25)}
+  .targetpin{width:0;height:0}
+  .leaflet-control-attribution{font-size:10px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>816 <span>Locator</span> · OpenStreetMap compass navigator</h1>
+  <div class="searchrow">
+    <input id="q" type="text" placeholder="Type a place, address, landmark…" autocomplete="off"/>
+    <button id="go">Locate</button>
+    <ul id="results" class="hidden"></ul>
+  </div>
+</header>
+
+<div id="mapwrap">
+  <div id="map"></div>
+
+  <div id="status">
+    <span id="gpsStatus" class="pill">GPS: waiting…</span>
+    <span id="magStatus" class="pill">Compass: waiting…</span>
+  </div>
+
+  <div id="controls">
+    <button id="btnMe">⌖ My location</button>
+    <label><input type="checkbox" id="headingUp"/> Heading-up map</label>
+    <label><input type="checkbox" id="followMe" checked/> Keep me centered</label>
+  </div>
+
+  <div id="manual">
+    <div id="manSliderRow" class="hidden">
+      No compass sensor detected — drag to set your heading manually:
+      <span id="manVal">0°</span>
+      <input type="range" id="manSlider" min="0" max="359" value="0"/>
+    </div>
+    <div class="declin">
+      <span>Magnetic declination (east +)</span>
+      <input type="number" id="declin" value="0" step="1"/>°
+    </div>
+  </div>
+
+  <div id="compassCard">
+    <svg id="dial" viewBox="-110 -110 220 220" aria-label="Compass dial"></svg>
+    <div class="readouts">
+      <div id="relBearing">— <small>ahead of you</small></div>
+      <div id="absBearing">target bearing: —</div>
+      <div id="distance">distance: —</div>
+      <div id="targetLabel">Search a destination above, or tap the map to drop a target.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   816 Locator
+   - Map tiles : OpenStreetMap (free) via Leaflet
+   - Geocoding : OSM Nominatim (free)
+   - Compass   : DeviceOrientationEvent (iOS webkitCompassHeading /
+                 Android deviceorientationabsolute alpha), screen
+                 orientation corrected. Manual slider fallback.
+   - Math      : Great-circle INITIAL BEARING (azimuth) by spherical
+                 trigonometry, plus Haversine distance:
+                   θ = atan2( sin Δλ · cos φ₂ ,
+                              cos φ₁ · sin φ₂ − sin φ₁ · cos φ₂ · cos Δλ )
+                 where φ/λ are latitudes/longitudes in radians.
+                 Relative bearing = (θ − device heading + 360) mod 360,
+                 i.e. how far to turn from where you face.
+   ===================================================================== */
+
+/* ---------------- state ---------------- */
+let userPos   = null;   // {lat,lng,acc}
+let targetPos = null;   // {lat,lng,label}
+let heading   = null;   // device/screen-up heading, deg 0..360 (0 = true north)
+let sensorOk    = false;
+let lastMagTs   = 0;
+let gotAbsolute = false;   // have we received a north-referenced alpha yet?
+let declination = 0;       // magnetic declination, degrees east positive
+let userDragging= false;
+
+/* ---------------- map (OpenStreetMap) ---------------- */
+const map = L.map('map', {zoomControl:false}).setView([25,10],2);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:19,
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+L.control.zoom({position:'bottomright'}).addTo(map);
+map.on('dragstart',()=>userDragging=true);
+map.on('dragend',()=>userDragging=false);
+
+const userMarker = L.marker([0,0],{
+  icon:L.divIcon({className:'', html:'<div class="userdot"></div>',
+                  iconSize:[18,18], iconAnchor:[9,9]}),
+  interactive:false, zIndexOffset:500
+}).addTo(map);
+const targetMarker = L.marker([0,0],{
+  icon:L.divIcon({className:'', html:'<div class="targetpin" style="width:26px;height:26px;'
+    +'border-radius:50% 50% 50% 0;background:#f43f5e;border:3px solid #fff;transform:rotate(-45deg);'
+    +'box-shadow:0 1px 6px rgba(0,0,0,.6)"></div>',
+    iconSize:[26,26], iconAnchor:[13,24]}),
+  zIndexOffset:600
+}); // added to the map only once a target exists
+let routeLine = null;
+
+/* ---------------- geodesy math ---------------- */
+const R_EARTH = 6371000; // m, mean Earth radius
+const D2R = Math.PI/180, R2D = 180/Math.PI;
+
+// Great-circle initial bearing (azimuth) from A to B, degrees 0..360.
+function initialBearing(lat1,lon1,lat2,lon2){
+  const p1=lat1*D2R, p2=lat2*D2R, dl=(lon2-lon1)*D2R;
+  const y = Math.sin(dl)*Math.cos(p2);
+  const x = Math.cos(p1)*Math.sin(p2) - Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+  return (Math.atan2(y,x)*R2D + 360) % 360;
+}
+
+// Haversine distance, meters.
+function haversine(lat1,lon1,lat2,lon2){
+  const p1=lat1*D2R, p2=lat2*D2R, dp=(lat2-lat1)*D2R, dl=(lon2-lon1)*D2R;
+  const a = Math.sin(dp/2)**2 + Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
+  return 2*R_EARTH*Math.asin(Math.min(1,Math.sqrt(a)));
+}
+
+// Bearing you must turn from your current heading to face the target.
+function relativeBearing(absBearing, devHeading){
+  if(devHeading==null) return null;
+  return (absBearing - devHeading + 360) % 360;
+}
+
+const WINDS=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+function windName(deg){ return WINDS[Math.round(((deg%360)+360)%360/22.5)%16]; }
+
+/* ---------------- compass dial (SVG, built once) ---------------- */
+const NS='http://www.w3.org/2000/svg';
+const dial=document.getElementById('dial');
+function el(tag,attrs,parent){const n=document.createElementNS(NS,tag);
+  for(const k in attrs)n.setAttribute(k,attrs[k]); (parent||dial).appendChild(n); return n;}
+
+el('circle',{cx:0,cy:0,r:104,fill:'#1e293b',stroke:'#475569','stroke-width':2});
+for(let d=0;d<360;d+=5){
+  const major=d%45===0, mid=d%15===0;
+  const len=major?14:mid?9:5;
+  el('line',{x1:0,y1:-104,x2:0,y2:-(104-len),stroke:major?'#e2e8f0':'#64748b',
+             'stroke-width':major?2.4:1.2,transform:`rotate(${d})`});
+}
+[['N',0,'#f43f5e'],['NE',45],['E',90],['SE',135],['S',180],['SW',225],['W',270],['NW',315]]
+.forEach(([t,d,c])=>{
+  const tx=el('text',{x:0,y:-76,'text-anchor':'middle','font-size':d%90===0?20:12,
+                      'font-weight':d%90===0?700:400,fill:c||'#94a3b8',transform:`rotate(${d})`});
+  tx.textContent=t;
+});
+// fixed lubber line (top of device = where you're facing)
+el('path',{d:'M -10 -112 L 10 -112 L 0 -96 Z',fill:'#fbbf24'});
+// rotating target needle
+const needle=el('g',{});
+el('path',{d:'M 0 -84 L 13 46 L 0 32 L -13 46 Z',fill:'#f43f5e',stroke:'#fff','stroke-width':1.5},needle);
+// Smooth shortest-path needle rotation. We use the SVG *attribute* transform
+// (rotates around the dial centre = SVG origin) rather than CSS transforms,
+// which are unreliable on SVG elements across browsers.
+let needleAngle=null, animTarget=null, animFrom=0, animStart=0;
+function setNeedle(rel){
+  if(rel==null) return;
+  if(needleAngle==null) needleAngle=rel;
+  else { const d=((rel-needleAngle+540)%360)-180;   // shortest path
+         animFrom=needleAngle; animTarget=needleAngle+d; animStart=performance.now(); }
+}
+(function tick(now){
+  if(animTarget!=null){
+    const t=Math.min(1,(now-animStart)/150);
+    needleAngle=animFrom+(animTarget-animFrom)*t;
+    if(t>=1) animTarget=null;
+  }
+  if(needleAngle!=null) needle.setAttribute('transform','rotate('+needleAngle+')');
+  requestAnimationFrame(tick);
+})(performance.now());
+
+/* ---------------- compass / magnetometer ---------------- */
+function screenAngle(){ // CSS rotation of the viewport, 0/90/180/270
+  return (screen.orientation && typeof screen.orientation.angle==='number')
+         ? screen.orientation.angle : (window.orientation||0);
+}
+function onOrientation(e){
+  let h=null, relOnly=false;
+  if(typeof e.webkitCompassHeading==='number' && isFinite(e.webkitCompassHeading)){
+    // iOS Safari: clockwise from magnetic north, along the physical top edge.
+    h=e.webkitCompassHeading;
+  }else if(e.absolute && e.alpha!=null){
+    // Android / others: for absolute events alpha is CCW rotation from
+    // (magnetic) north. Convert to a clockwise heading.
+    gotAbsolute=true; h=360 - e.alpha;
+  }else if(!gotAbsolute && e.alpha!=null){
+    // Non-absolute fallback: the reference frame is arbitrary (device boot
+    // pose). Use it only until a real north-referenced reading arrives, and warn.
+    h=360 - e.alpha; relOnly=true;
+  }
+  if(h==null) return;
+  // Align the reading with the *visual* top of the screen when the device
+  // is rotated (landscape etc.).
+  heading=((h + screenAngle())%360+360)%360;
+  sensorOk=true; lastMagTs=Date.now();
+  setMag(relOnly ? 'Compass: relative only (approx.)' : 'Compass: OK', relOnly?'warn':'ok');
+  updateCompassUI();
+}
+window.addEventListener('deviceorientationabsolute', onOrientation, true);
+window.addEventListener('deviceorientation', onOrientation, true);
+
+async function requestSensorPermission(){ // iOS requires a user gesture
+  if(typeof DeviceOrientationEvent!=='undefined' &&
+     typeof DeviceOrientationEvent.requestPermission==='function'){
+    try{ const r=await DeviceOrientationEvent.requestPermission();
+         setMag(r==='granted' ? 'Compass: waiting for data…' : 'Compass: permission denied',
+                r==='granted'?null:'warn'); }catch(err){ setMag('Compass: error','warn'); }
+  }
+}
+let permAsked=false;
+window.addEventListener('pointerdown',()=>{ if(!permAsked){permAsked=true; requestSensorPermission();}},{once:false});
+
+/* ---------------- manual heading fallback ---------------- */
+const manSliderRow=document.getElementById('manSliderRow'),
+      manSlider=document.getElementById('manSlider'),
+      manVal=document.getElementById('manVal');
+manSlider.addEventListener('input',()=>{
+  heading=+manSlider.value; manVal.textContent=Math.round(heading)+'°';
+  updateCompassUI();
+});
+document.getElementById('declin').addEventListener('input',e=>{
+  declination=parseFloat(e.target.value)||0; updateCompassUI();
+});
+setInterval(()=>{ // show the manual slider only when no sensor data is arriving
+  const live = sensorOk && (Date.now()-lastMagTs<4000);
+  manSliderRow.classList.toggle('hidden', live);
+},1500);
+
+/* ---------------- geolocation ---------------- */
+function setGps(txt,cls){ const p=document.getElementById('gpsStatus');
+  p.textContent=txt; p.className='pill'+(cls?' '+cls:''); }
+function setMag(txt,cls){ const p=document.getElementById('magStatus');
+  p.textContent=txt; p.className='pill'+(cls?' '+cls:''); }
+
+function startGeo(){
+  if(!('geolocation' in navigator)){ setGps('GPS: not supported','warn'); return; }
+  setGps('GPS: acquiring…');
+  navigator.geolocation.watchPosition(pos=>{
+    userPos={lat:pos.coords.latitude, lng:pos.coords.longitude, acc:pos.coords.accuracy};
+    setGps(`GPS: OK ±${Math.round(userPos.acc)} m`,'ok');
+    refresh();
+  },err=>setGps('GPS: '+err.message,'warn'),
+     {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+}
+startGeo();
+document.getElementById('btnMe').addEventListener('click',()=>{
+  startGeo();
+  if(userPos) map.flyTo([userPos.lat,userPos.lng], Math.max(map.getZoom(),15));
+});
+
+/* ---------------- geocoding (OSM Nominatim, free) ---------------- */
+const q=document.getElementById('q'), results=document.getElementById('results');
+let debounce=null;
+function setTarget(lat,lng,label){
+  targetPos={lat,lng,label};
+  if(!map.hasLayer(targetMarker)) targetMarker.addTo(map);
+  targetMarker.setLatLng([lat,lng]);
+  refresh();
+  map.flyTo([lat,lng],14,{duration:0.8});
+}
+async function search(){
+  const term=q.value.trim(); if(!term) return;
+  results.classList.remove('hidden');
+  results.innerHTML='<li>Searching OpenStreetMap…</li>';
+  try{
+    const r=await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&addressdetails=0'
+                        +'&q='+encodeURIComponent(term),
+                        {headers:{'Accept':'application/json'}});
+    const items=await r.json();
+    if(!items.length){ results.innerHTML='<li>No results found.</li>'; return; }
+    results.innerHTML='';
+    items.forEach(it=>{
+      const li=document.createElement('li');
+      li.textContent=it.display_name;
+      li.addEventListener('click',()=>{
+        q.value=it.display_name;
+        results.classList.add('hidden');
+        setTarget(+it.lat, +it.lon, it.display_name);
+      });
+      results.appendChild(li);
+    });
+  }catch(e){ results.innerHTML='<li>Geocoding error: '+e.message+'</li>'; }
+}
+document.getElementById('go').addEventListener('click',search);
+q.addEventListener('keydown',e=>{ if(e.key==='Enter') search(); });
+q.addEventListener('input',()=>{ clearTimeout(debounce);
+  debounce=setTimeout(()=>{ if(q.value.trim().length>2) search(); },600); });
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.searchrow')) results.classList.add('hidden');
+});
+
+/* ---------------- map interactions ---------------- */
+map.on('click',async e=>{
+  setTarget(e.latlng.lat, e.latlng.lng, 'Dropped pin');
+  // best-effort reverse geocode for a nicer label (single request)
+  try{
+    const r=await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2'
+      +'&lat='+e.latlng.lat+'&lon='+e.latlng.lng);
+    const it=await r.json();
+    if(it && it.display_name){ targetPos.label=it.display_name; refresh(); }
+  }catch(_){/* keep "Dropped pin" */}
+});
+document.getElementById('headingUp').addEventListener('change',e=>{
+  map.setRotation(e.target.checked && heading!=null ? -heading : 0);
+});
+
+/* ---------------- main update loop ---------------- */
+function refresh(){
+  // markers + route line
+  if(userPos){ userMarker.setLatLng([userPos.lat,userPos.lng]);
+    if(document.getElementById('followMe').checked && !userDragging)
+      map.panTo([userPos.lat,userPos.lng],{animate:true});
+  }
+  if(targetPos) targetMarker.setLatLng([targetPos.lat,targetPos.lng]);
+  if(routeLine){ routeLine.remove(); routeLine=null; }
+  if(userPos && targetPos){
+    routeLine=L.polyline([[userPos.lat,userPos.lng],[targetPos.lat,targetPos.lng]],
+      {color:'#f43f5e',weight:3,dashArray:'8 8',opacity:.9}).addTo(map);
+  }
+  updateCompassUI();
+}
+document.getElementById('followMe').addEventListener('change',refresh);
+
+function updateCompassUI(){
+  const absB = (userPos && targetPos)
+    ? initialBearing(userPos.lat,userPos.lng,targetPos.lat,targetPos.lng) : null;
+  const dist = (userPos && targetPos)
+    ? haversine(userPos.lat,userPos.lng,targetPos.lat,targetPos.lng) : null;
+
+  document.getElementById('targetLabel').textContent =
+    targetPos ? '🎯 '+targetPos.label : 'Search a destination above, or tap the map to drop a target.';
+
+  if(absB==null){
+    document.getElementById('relBearing').innerHTML='— <small>ahead of you</small>';
+    document.getElementById('absBearing').textContent='target bearing: —';
+    document.getElementById('distance').textContent='distance: —';
+    return;
+  }
+  const trueHeading = (heading==null) ? null : ((heading + declination)%360+360)%360;
+  const rel = relativeBearing(absB, trueHeading);
+  if(dist < 5){ // essentially on top of the target
+    document.getElementById('relBearing').innerHTML='✅ <small>you are there</small>';
+  }else{
+    document.getElementById('relBearing').innerHTML=
+      rel==null ? '—' : Math.round(rel)+'° '
+      + (rel<10||rel>=350 ? '<small>straight ahead</small>'
+        : rel<180 ? '<small>to your right</small>' : '<small>to your left</small>');
+  }
+  document.getElementById('absBearing').textContent=
+    'target bearing: '+absB.toFixed(1)+'° ('+windName(absB)+')';
+  document.getElementById('distance').textContent = dist==null ? 'distance: —' :
+    dist<1000 ? 'distance: '+Math.round(dist)+' m'
+              : 'distance: '+(dist/1000).toFixed(2)+' km ('+(dist/1852).toFixed(1)+' nm)';
+
+  setNeedle(rel);
+  if(document.getElementById('headingUp').checked && heading!=null)
+    map.setRotation(-heading);
+}
+
+// smooth periodic refresh (sensor + GPS both stream independently)
+setInterval(updateCompassUI, 250);
+</script>
+</body>
+</html>
